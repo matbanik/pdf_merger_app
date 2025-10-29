@@ -28,14 +28,25 @@ A desktop utility built with Python and Tkinter for merging multiple PDF files i
 
 ## Installation & Usage
 
-1.  **Install Dependencies**: Make sure you have Python 3 installed. Then, install the required library using pip:
+1.  **Install Dependencies**: Make sure you have Python 3.8+ installed. Then, install all required dependencies:
     ```sh
-    pip install PyMuPDF
+    pip install -r requirements.txt
     ```
+    
+    Or install individually:
+    ```sh
+    pip install PyMuPDF marker-pdf opencv-python torch transformers
+    ```
+
 2.  **Run the Application**: Execute the Python script from your terminal:
     ```sh
     python pdf_merger_app.py
     ```
+
+**Note**: On first run with markdown conversion enabled, the app will download AI models (~1-2GB). Ensure you have:
+- Internet connection
+- Sufficient disk space
+- Models directory configured in the app
 
 ---
 

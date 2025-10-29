@@ -1,0 +1,36 @@
+# Core PDF processing
+PyMuPDF>=1.23.0
+
+# Fast text-based PDF to Markdown (no OCR)
+pymupdf4llm>=0.0.5
+
+# AI-powered PDF to Markdown conversion with OCR
+marker-pdf>=0.2.0
+
+# Computer vision (required by marker-pdf)
+opencv-python>=4.8.0
+
+# Deep learning framework
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Natural language processing
+transformers>=4.30.0
+
+# Image processing
+Pillow>=10.0.0
+
+# Numerical computing
+numpy>=1.24.0
+
+# Progress bars
+tqdm>=4.65.0
+
+# Hugging Face model hub
+huggingface-hub>=0.16.0
+
+# Safe tensor format
+safetensors>=0.3.0
+
+# Build tool (for creating executable)
+pyinstaller>=5.13.0
