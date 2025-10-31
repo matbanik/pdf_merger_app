@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox, scrolledtext, simpledialog
 import os
 import json
 import threading
@@ -8,6 +8,9 @@ import fitz  # PyMuPDF
 import re
 import tempfile
 import multiprocessing
+import subprocess
+import shutil
+import webbrowser
 # Marker imports moved to functions to allow environment variable setting first
 import logging
 
@@ -30,7 +33,7 @@ class PDFMergerApp:
     def __init__(self, master):
         self.master = master
         master.title("PDF Pure Text Merger & PII Scrubber")
-        master.geometry("800x850") # Increased height for new section
+        master.geometry("800x900") # Increased height for decrypt section
 
         self.pdf_files = [] # List to store full paths of PDF files
         self.output_folder = DOWNLOADS_PATH # Default output folder
@@ -52,6 +55,13 @@ class PDFMergerApp:
         self.use_gpu_var = tk.BooleanVar(value=False)
         # New: Variable for models directory
         self.models_directory = MODELS_DIR  # Default to app directory
+        # New: Variable for qpdf executable path
+        self.qpdf_path = None  # Will be loaded from settings
+        # New: Console visibility and filter variables
+        self.console_visible_var = tk.BooleanVar(value=True)
+        self.console_filter_level_var = tk.StringVar(value="ALL")
+        # Message buffer for filtering
+        self.console_message_buffer = []  # List of (message, tag, level) tuples
 
         # Initialize widgets first so console_output exists before load_settings
         self.create_widgets() # Build the GUI elements
@@ -62,21 +72,188 @@ class PDFMergerApp:
 
     def create_widgets(self):
         """Creates and lays out all the GUI widgets."""
-        # --- Top Section: Word Count and Destination ---
+        # --- Top Section: Word Count and Two-Column Layout ---
         top_frame = tk.Frame(self.master, bd=2, relief="groove", padx=10, pady=10)
         top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
 
         self.total_words_label = tk.Label(top_frame, text=f"Total Words: {self.total_word_count}", font=("Arial", 14, "bold"))
         self.total_words_label.pack(side=tk.TOP, pady=5)
 
-        dest_frame = tk.Frame(top_frame)
-        dest_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
+        # Two-column layout frame
+        columns_frame = tk.Frame(top_frame)
+        columns_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
+
+        # --- Left Column: Output Folder (50%) ---
+        left_column = tk.Frame(columns_frame)
+        left_column.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+
+        dest_frame = tk.Frame(left_column)
+        dest_frame.pack(side=tk.TOP, fill=tk.X)
 
         tk.Label(dest_frame, text="Output Folder:").pack(side=tk.LEFT)
-        self.output_folder_label = tk.Label(dest_frame, text=self.output_folder, bg="lightgray", width=50, anchor="w", relief="sunken")
+        self.output_folder_label = tk.Label(dest_frame, text=self.output_folder, bg="lightgray", anchor="w", relief="sunken")
         self.output_folder_label.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
         self.select_folder_btn = tk.Button(dest_frame, text="Select", command=self.select_output_folder)
         self.select_folder_btn.pack(side=tk.RIGHT)
+
+        # --- Right Column: PDF Decryption (50%) ---
+        right_column = tk.Frame(columns_frame)
+        right_column.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
+
+        decrypt_frame = tk.Frame(right_column)
+        decrypt_frame.pack(side=tk.TOP, fill=tk.X)
+
+        decrypt_left = tk.Frame(decrypt_frame)
+        decrypt_left.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        decrypt_right = tk.Frame(decrypt_frame)
+        decrypt_right.pack(side=tk.RIGHT)
+
+        tk.Label(decrypt_left, text="PDF Decryption (qpdf):", font=("Arial", 12)).pack(side=tk.LEFT, padx=5)
+        # Dynamic button: "Locate qpdf" when not configured, "Decrypt PDF" when configured
+        self.decrypt_btn = tk.Button(decrypt_left, text="Locate qpdf", command=self._decrypt_or_locate, width=15)
+        self.decrypt_btn.pack(side=tk.LEFT, padx=5, pady=5)
+
+        # Display current qpdf path (if configured)
+        self.qpdf_path_label = tk.Label(decrypt_left, text="", fg="green", font=("Arial", 8))
+        self.qpdf_path_label.pack(side=tk.LEFT, padx=5, pady=5)
+
+        # Add link to download qpdf
+        link_label = tk.Label(
+            decrypt_right, 
+            text="Get qpdf for Decryption", 
+            fg="blue", 
+            cursor="hand2", 
+            font=("Arial", 9, "underline")
+        )
+        link_label.pack(side=tk.RIGHT, padx=5)
+        link_label.bind("<Button-1>", lambda e: self._open_qpdf_download_page())
+
+        # --- Control Buttons Section (Icon Toolbar) ---
+        control_frame = tk.Frame(self.master, bd=2, relief="groove", padx=10, pady=10)
+        control_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
+        
+        # Toolbar with icon buttons
+        toolbar = tk.Frame(control_frame)
+        toolbar.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # Play button (Start Merge)
+        self.start_btn = tk.Button(
+            toolbar, 
+            text="▶", 
+            font=("Arial", 14, "bold"),
+            command=self.start_merge,
+            width=3,
+            relief=tk.RAISED,
+            bd=1
+        )
+        self.start_btn.pack(side=tk.LEFT, padx=2)
+        self.start_btn.bind("<Enter>", lambda e: self.start_btn.config(cursor="hand2"))
+        self.start_btn.bind("<Leave>", lambda e: self.start_btn.config(cursor=""))
+        
+        # Stop button (Stop Merge)
+        self.stop_btn = tk.Button(
+            toolbar, 
+            text="■", 
+            font=("Arial", 14, "bold"),
+            command=self.stop_merge,
+            width=3,
+            state=tk.DISABLED,
+            relief=tk.RAISED,
+            bd=1
+        )
+        self.stop_btn.pack(side=tk.LEFT, padx=2)
+        self.stop_btn.bind("<Enter>", lambda e: self.stop_btn.config(cursor="hand2") if self.stop_btn.cget("state") == tk.NORMAL else None)
+        
+        # Pause button (using double bar symbol)
+        self.pause_btn = tk.Button(
+            toolbar, 
+            text="⏸", 
+            font=("Arial", 14, "bold"),
+            command=self.pause_merge,
+            width=3,
+            state=tk.DISABLED,
+            relief=tk.RAISED,
+            bd=1
+        )
+        self.pause_btn.pack(side=tk.LEFT, padx=2)
+        self.pause_btn.bind("<Enter>", lambda e: self.pause_btn.config(cursor="hand2") if self.pause_btn.cget("state") == tk.NORMAL else None)
+        
+        # Separator 1
+        separator1 = tk.Frame(toolbar, width=2, bg="gray", relief=tk.SUNKEN)
+        separator1.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=2)
+        
+        # Add PDF button (text button for clarity)
+        self.add_btn = tk.Button(toolbar, text="Add PDF", command=self.add_pdf_file, width=12)
+        self.add_btn.pack(side=tk.LEFT, padx=2)
+        
+        # Separator 2
+        separator2 = tk.Frame(toolbar, width=2, bg="gray", relief=tk.SUNKEN)
+        separator2.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=2)
+        
+        # Move Up button (↑)
+        self.move_up_btn = tk.Button(
+            toolbar, 
+            text="↑", 
+            font=("Arial", 14, "bold"),
+            command=self.move_pdf_up, 
+            state=tk.DISABLED,
+            width=3,
+            relief=tk.RAISED,
+            bd=1
+        )
+        self.move_up_btn.pack(side=tk.LEFT, padx=2)
+        
+        # Move Down button (↓)
+        self.move_down_btn = tk.Button(
+            toolbar, 
+            text="↓", 
+            font=("Arial", 14, "bold"),
+            command=self.move_pdf_down, 
+            state=tk.DISABLED,
+            width=3,
+            relief=tk.RAISED,
+            bd=1
+        )
+        self.move_down_btn.pack(side=tk.LEFT, padx=2)
+        
+        # Move to Top button (⇈)
+        self.move_to_top_btn = tk.Button(
+            toolbar, 
+            text="⇈", 
+            font=("Arial", 14, "bold"),
+            command=self.move_pdf_to_top, 
+            state=tk.DISABLED,
+            width=3,
+            relief=tk.RAISED,
+            bd=1
+        )
+        self.move_to_top_btn.pack(side=tk.LEFT, padx=2)
+        
+        # Move to Bottom button (⇊)
+        self.move_to_bottom_btn = tk.Button(
+            toolbar, 
+            text="⇊", 
+            font=("Arial", 14, "bold"),
+            command=self.move_pdf_to_bottom, 
+            state=tk.DISABLED,
+            width=3,
+            relief=tk.RAISED,
+            bd=1
+        )
+        self.move_to_bottom_btn.pack(side=tk.LEFT, padx=2)
+        
+        # Separator 3
+        separator3 = tk.Frame(toolbar, width=2, bg="gray", relief=tk.SUNKEN)
+        separator3.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=2)
+        
+        # Remove Selected button (text button)
+        self.remove_btn = tk.Button(toolbar, text="Remove Selected", command=self.remove_pdf_file, state=tk.DISABLED, width=15)
+        self.remove_btn.pack(side=tk.LEFT, padx=2)
+        
+        # Clear All button (text button)
+        self.clear_all_btn = tk.Button(toolbar, text="Clear All", command=self.clear_all_pdfs, state=tk.DISABLED, width=12)
+        self.clear_all_btn.pack(side=tk.LEFT, padx=2)
 
         # --- File List Section ---
         list_frame = tk.Frame(self.master, bd=2, relief="groove", padx=10, pady=10)
@@ -92,51 +269,49 @@ class PDFMergerApp:
         scrollbar.pack(side=tk.LEFT, fill=tk.Y)
         self.pdf_listbox.config(yscrollcommand=scrollbar.set)
 
-        button_frame = tk.Frame(list_frame)
-        button_frame.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self.add_btn = tk.Button(button_frame, text="Add PDF", command=self.add_pdf_file)
-        self.add_btn.pack(pady=5, fill=tk.X)
-        self.move_up_btn = tk.Button(button_frame, text="Move Up", command=self.move_pdf_up, state=tk.DISABLED)
-        self.move_up_btn.pack(pady=5, fill=tk.X)
-        self.move_down_btn = tk.Button(button_frame, text="Move Down", command=self.move_pdf_down, state=tk.DISABLED)
-        self.move_down_btn.pack(pady=5, fill=tk.X)
-        self.remove_btn = tk.Button(button_frame, text="Remove", command=self.remove_pdf_file, state=tk.DISABLED)
-        self.remove_btn.pack(pady=5, fill=tk.X)
-        self.clear_all_btn = tk.Button(button_frame, text="Clear All", command=self.clear_all_pdfs, state=tk.DISABLED)
-        self.clear_all_btn.pack(pady=5, fill=tk.X)
-
-        # --- Configuration Section ---
+        # --- Configuration Section (Two-Column Layout) ---
         config_frame = tk.LabelFrame(self.master, text="Configuration", bd=2, relief="groove", padx=10, pady=10)
         config_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
 
-        self.remove_timestamps_checkbox = tk.Checkbutton(config_frame, text="Remove Timestamps", variable=self.remove_timestamps_var, command=lambda: self.log_and_save_setting("Timestamps", self.remove_timestamps_var))
+        # Create two-column layout
+        config_columns = tk.Frame(config_frame)
+        config_columns.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # --- Left Column: Basic Options (50%) ---
+        left_column = tk.Frame(config_columns)
+        left_column.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+
+        self.remove_timestamps_checkbox = tk.Checkbutton(left_column, text="Remove Timestamps", variable=self.remove_timestamps_var, command=lambda: self.log_and_save_setting("Timestamps", self.remove_timestamps_var))
         self.remove_timestamps_checkbox.pack(anchor="w", padx=5, pady=2)
 
-        self.remove_images_checkbox = tk.Checkbutton(config_frame, text="Remove Images (extract text only)", variable=self.remove_images_var, command=lambda: self.log_and_save_setting("Images", self.remove_images_var))
+        self.remove_images_checkbox = tk.Checkbutton(left_column, text="Remove Images (extract text only)", variable=self.remove_images_var, command=lambda: self.log_and_save_setting("Images", self.remove_images_var))
         self.remove_images_checkbox.pack(anchor="w", padx=5, pady=2)
         
-        self.remove_pii_checkbox = tk.Checkbutton(config_frame, text="Remove PII (Names, Addresses, etc.)", variable=self.remove_pii_var, command=self.on_pii_checkbox_change)
+        self.remove_pii_checkbox = tk.Checkbutton(left_column, text="Remove PII (Names, Addresses, etc.)", variable=self.remove_pii_var, command=self.on_pii_checkbox_change)
         self.remove_pii_checkbox.pack(anchor="w", padx=5, pady=2)
 
-        self.custom_pii_label = tk.Label(config_frame, text="Custom Strings to Remove (comma-separated):")
+        self.custom_pii_label = tk.Label(left_column, text="Custom Strings to Remove (comma-separated):")
         self.custom_pii_label.pack(anchor="w", padx=25, pady=(5,0))
-        self.custom_pii_entry = tk.Entry(config_frame, textvariable=self.custom_pii_var)
+        self.custom_pii_entry = tk.Entry(left_column, textvariable=self.custom_pii_var)
         self.custom_pii_entry.pack(fill=tk.X, padx=25, pady=2)
         self.custom_pii_var.trace_add("write", lambda *args: self.save_settings())
+
+        # --- Right Column: Advanced Options (50%) ---
+        right_column = tk.Frame(config_columns)
+        right_column.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
         
-        # New: Split by words widgets
-        self.split_by_words_checkbox = tk.Checkbutton(config_frame, text="Split output by words", variable=self.split_by_words_var, command=self.on_split_checkbox_change)
-        self.split_by_words_checkbox.pack(anchor="w", padx=5, pady=(10,2))
+        # Split by words widgets
+        self.split_by_words_checkbox = tk.Checkbutton(right_column, text="Split output by words", variable=self.split_by_words_var, command=self.on_split_checkbox_change)
+        self.split_by_words_checkbox.pack(anchor="w", padx=5, pady=(0,2))
         
-        self.split_word_count_label = tk.Label(config_frame, text="Number of words per file:")
+        self.split_word_count_label = tk.Label(right_column, text="Number of words per file:")
         self.split_word_count_label.pack(anchor="w", padx=25, pady=(5,0))
-        self.split_word_count_entry = tk.Entry(config_frame, textvariable=self.split_word_count_var)
+        self.split_word_count_entry = tk.Entry(right_column, textvariable=self.split_word_count_var)
         self.split_word_count_entry.pack(fill=tk.X, padx=25, pady=2)
         self.split_word_count_var.trace_add("write", lambda *args: self.save_settings())
         
-        # New: Markdown output checkbox and preload button
-        markdown_frame = tk.Frame(config_frame)
+        # Markdown output checkbox and preload button
+        markdown_frame = tk.Frame(right_column)
         markdown_frame.pack(fill=tk.X, padx=5, pady=(10,2))
         
         self.generate_markdown_checkbox = tk.Checkbutton(markdown_frame, text="Also generate Markdown output (.md)", variable=self.generate_markdown_var, command=self.on_markdown_checkbox_change)
@@ -145,35 +320,43 @@ class PDFMergerApp:
         self.preload_models_btn = tk.Button(markdown_frame, text="Select Models Dir", command=self.preload_marker_models, width=15)
         self.preload_models_btn.pack(side=tk.RIGHT, padx=(10,0))
         
-        # New: Models path label (initially hidden)
-        self.models_path_label = tk.Label(config_frame, text="", fg="green", font=("Arial", 9))
+        # Models path label (initially hidden)
+        self.models_path_label = tk.Label(right_column, text="", fg="green", font=("Arial", 9))
         self.models_path_label.pack(anchor="w", padx=25, pady=(2,5))
         
-        # New: Simple Markdown checkbox (no OCR)
-        self.simple_markdown_checkbox = tk.Checkbutton(config_frame, text="Simple Markdown (fast, no OCR - extracts existing text only)", variable=self.simple_markdown_var, command=self.on_simple_markdown_checkbox_change)
+        # Simple Markdown checkbox (no OCR)
+        self.simple_markdown_checkbox = tk.Checkbutton(right_column, text="Simple Markdown (fast, no OCR - extracts existing text only)", variable=self.simple_markdown_var, command=self.on_simple_markdown_checkbox_change)
         self.simple_markdown_checkbox.pack(anchor="w", padx=25, pady=2)
         
-        # New: GPU acceleration checkbox
-        self.use_gpu_checkbox = tk.Checkbutton(config_frame, text="Use GPU acceleration (if available)", variable=self.use_gpu_var, command=self.on_gpu_checkbox_change)
+        # GPU acceleration checkbox
+        self.use_gpu_checkbox = tk.Checkbutton(right_column, text="Use GPU acceleration (if available)", variable=self.use_gpu_var, command=self.on_gpu_checkbox_change)
         self.use_gpu_checkbox.pack(anchor="w", padx=25, pady=2)
-
-
-        # --- Control Buttons Section ---
-        control_frame = tk.Frame(self.master, bd=2, relief="groove", padx=10, pady=10)
-        control_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
-
-        self.start_btn = tk.Button(control_frame, text="Start Merge", command=self.start_merge, width=15)
-        self.start_btn.pack(side=tk.LEFT, expand=True, padx=5, pady=5)
-        self.pause_btn = tk.Button(control_frame, text="Pause", command=self.pause_merge, width=15, state=tk.DISABLED)
-        self.pause_btn.pack(side=tk.LEFT, expand=True, padx=5, pady=5)
-        self.stop_btn = tk.Button(control_frame, text="Stop", command=self.stop_merge, width=15, state=tk.DISABLED)
-        self.stop_btn.pack(side=tk.LEFT, expand=True, padx=5, pady=5)
 
         # --- Console Output Section ---
         console_frame = tk.Frame(self.master, bd=2, relief="groove", padx=10, pady=10)
         console_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        tk.Label(console_frame, text="Console Output:", font=("Arial", 12)).pack(side=tk.TOP, anchor="w")
+        # Console header with controls
+        console_header = tk.Frame(console_frame)
+        console_header.pack(side=tk.TOP, fill=tk.X, pady=(0, 5))
+        
+        tk.Label(console_header, text="Console Output:", font=("Arial", 12)).pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Show/Hide checkbox
+        self.console_show_checkbox = tk.Checkbutton(
+            console_header, 
+            text="Show Console", 
+            variable=self.console_visible_var,
+            command=self._toggle_console_visibility
+        )
+        self.console_show_checkbox.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Filter dropdown
+        tk.Label(console_header, text="Filter:", font=("Arial", 10)).pack(side=tk.LEFT, padx=(0, 5))
+        filter_levels = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+        self.console_filter_dropdown = tk.OptionMenu(console_header, self.console_filter_level_var, *filter_levels, command=self._on_filter_change)
+        self.console_filter_dropdown.pack(side=tk.LEFT)
+        
         self.console_output = scrolledtext.ScrolledText(console_frame, wrap=tk.WORD, height=10, bg="black", fg="lime", font=("Consolas", 10))
         self.console_output.pack(fill=tk.BOTH, expand=True)
         self.console_output.tag_config("info", foreground="white")
@@ -181,10 +364,14 @@ class PDFMergerApp:
         self.console_output.tag_config("progress", foreground="cyan")
         self.console_output.tag_config("success", foreground="green")
         self.console_output.tag_config("warning", foreground="yellow")
+        self.console_output.tag_config("debug", foreground="gray")
 
         self.print_to_console("Welcome to PDF Merger & PII Scrubber!", "info")
         self.print_to_console("Select PDF files and click 'Start Merge'.", "info")
         self.print_to_console(f"Default output folder: {self.output_folder}", "info")
+        
+        # Check qpdf availability on startup and update UI
+        self._update_qpdf_ui_status()
         
         # Check GPU availability
         try:
@@ -386,7 +573,7 @@ class PDFMergerApp:
                 
                 # Verify environment variable is set
                 actual_cache_dir = os.environ.get('MODEL_CACHE_DIR')
-                self.master.after(0, lambda: self.print_to_console(f"[DEBUG] MODEL_CACHE_DIR env var: {actual_cache_dir}", "info"))
+                self.master.after(0, lambda: self.print_to_console(f"[DEBUG] MODEL_CACHE_DIR env var: {actual_cache_dir}", "debug"))
                 
                 # Now import torch and determine device
                 import torch
@@ -434,7 +621,7 @@ class PDFMergerApp:
                     # Check where Surya thinks it should store models
                     from surya import settings
                     actual_model_dir = settings.settings.MODEL_CACHE_DIR
-                    self.master.after(0, lambda: self.print_to_console(f"[DEBUG] Surya MODEL_CACHE_DIR: {actual_model_dir}", "info"))
+                    self.master.after(0, lambda: self.print_to_console(f"[DEBUG] Surya MODEL_CACHE_DIR: {actual_model_dir}", "debug"))
                     
                     self.master.after(0, lambda: self.print_to_console("[INFO] Downloading and initializing marker-pdf models...", "progress"))
                     
@@ -539,20 +726,108 @@ startxref
 
     def on_listbox_select(self, event):
         """Enables/disables buttons based on listbox selection."""
-        if self.pdf_listbox.curselection():
-            self.move_up_btn.config(state=tk.NORMAL)
-            self.move_down_btn.config(state=tk.NORMAL)
+        selected_indices = self.pdf_listbox.curselection()
+        has_selection = len(selected_indices) > 0
+        list_size = self.pdf_listbox.size()
+        
+        if has_selection:
+            selected_idx = selected_indices[0]
+            # Enable move buttons
+            self.move_up_btn.config(state=tk.NORMAL if selected_idx > 0 else tk.DISABLED)
+            self.move_down_btn.config(state=tk.NORMAL if selected_idx < list_size - 1 else tk.DISABLED)
+            self.move_to_top_btn.config(state=tk.NORMAL if selected_idx > 0 else tk.DISABLED)
+            self.move_to_bottom_btn.config(state=tk.NORMAL if selected_idx < list_size - 1 else tk.DISABLED)
             self.remove_btn.config(state=tk.NORMAL)
         else:
             self.move_up_btn.config(state=tk.DISABLED)
             self.move_down_btn.config(state=tk.DISABLED)
+            self.move_to_top_btn.config(state=tk.DISABLED)
+            self.move_to_bottom_btn.config(state=tk.DISABLED)
             self.remove_btn.config(state=tk.DISABLED)
         
-        self.clear_all_btn.config(state=tk.NORMAL if self.pdf_listbox.size() > 0 else tk.DISABLED)
+        self.clear_all_btn.config(state=tk.NORMAL if list_size > 0 else tk.DISABLED)
 
+    def _get_log_level_from_tag(self, tag):
+        """Maps console tags to standard logging levels."""
+        tag_lower = (tag or "").lower()
+        level_mapping = {
+            "debug": "DEBUG",
+            "info": "INFO",
+            "warning": "WARNING",
+            "error": "ERROR",
+            "success": "INFO",  # Success messages are typically INFO level
+            "progress": "INFO",  # Progress messages are typically INFO level
+            None: "INFO",  # Default to INFO if no tag
+        }
+        return level_mapping.get(tag_lower, "INFO")
+    
+    def _should_show_message(self, level):
+        """Determines if a message should be shown based on current filter."""
+        filter_level = self.console_filter_level_var.get()
+        if filter_level == "ALL":
+            return True
+        
+        # Define level hierarchy (lower number = higher priority)
+        level_hierarchy = {
+            "DEBUG": 0,
+            "INFO": 1,
+            "WARNING": 2,
+            "ERROR": 3,
+            "CRITICAL": 4
+        }
+        
+        filter_value = level_hierarchy.get(filter_level, 1)
+        message_value = level_hierarchy.get(level, 1)
+        
+        # Show messages at or above the filter level
+        return message_value >= filter_value
+    
     def print_to_console(self, message, tag=None):
-        """Prints a message to the console output widget."""
-        self.console_output.insert(tk.END, message + "\n", tag)
+        """Prints a message to the console output widget with filtering support."""
+        # Determine log level from tag
+        level = self._get_log_level_from_tag(tag)
+        
+        # Store message in buffer
+        self.console_message_buffer.append((message, tag, level))
+        
+        # Check if message should be shown based on filter
+        if not self._should_show_message(level):
+            return
+        
+        # Only insert if console is visible
+        if self.console_visible_var.get():
+            self.console_output.insert(tk.END, message + "\n", tag)
+            self.console_output.see(tk.END)
+    
+    def _toggle_console_visibility(self):
+        """Shows or hides the console based on checkbox state."""
+        if self.console_visible_var.get():
+            self.console_output.pack(fill=tk.BOTH, expand=True)
+            self._refresh_console_display()
+        else:
+            self.console_output.pack_forget()
+        self.save_settings()
+    
+    def _on_filter_change(self, *args):
+        """Called when filter level changes - refreshes the console display."""
+        self._refresh_console_display()
+        self.save_settings()
+    
+    def _refresh_console_display(self):
+        """Refreshes the console display based on current filter and visibility."""
+        if not self.console_visible_var.get():
+            return
+        
+        # Clear current display
+        self.console_output.delete(1.0, tk.END)
+        
+        # Re-insert messages that match the current filter
+        filter_level = self.console_filter_level_var.get()
+        for message, tag, level in self.console_message_buffer:
+            if self._should_show_message(level):
+                self.console_output.insert(tk.END, message + "\n", tag)
+        
+        # Scroll to end
         self.console_output.see(tk.END)
 
     def log_and_save_setting(self, setting_name, var):
@@ -584,6 +859,11 @@ startxref
                     self.use_gpu_var.set(settings.get("use_gpu_enabled", False))
                     # New: Load models directory
                     self.models_directory = settings.get("models_directory", MODELS_DIR)
+                    # New: Load qpdf path
+                    self.qpdf_path = settings.get("qpdf_path", None)
+                    # New: Load console settings
+                    self.console_visible_var.set(settings.get("console_visible", True))
+                    self.console_filter_level_var.set(settings.get("console_filter_level", "ALL"))
                     
                     self.print_to_console(f"Loaded settings from {SETTINGS_FILE}", "info")
                     
@@ -618,6 +898,13 @@ startxref
         
         # Update markdown controls visibility based on loaded settings
         self._update_markdown_controls_visibility()
+        
+        # Update qpdf UI status after loading settings
+        self._update_qpdf_ui_status()
+        
+        # Update console visibility and refresh display after loading settings
+        self._toggle_console_visibility()
+        self._refresh_console_display()
 
     def save_settings(self):
         """Saves current settings to settings.json."""
@@ -638,7 +925,12 @@ startxref
             # New: Save GPU setting
             "use_gpu_enabled": self.use_gpu_var.get(),
             # New: Save models directory
-            "models_directory": self.models_directory
+            "models_directory": self.models_directory,
+            # New: Save qpdf path
+            "qpdf_path": self.qpdf_path,
+            # New: Save console settings
+            "console_visible": self.console_visible_var.get(),
+            "console_filter_level": self.console_filter_level_var.get()
         }
         try:
             with open(SETTINGS_FILE, "w") as f:
@@ -766,6 +1058,36 @@ startxref
             self.pdf_listbox.insert(index+1, os.path.basename(self.pdf_files[index+1]))
             self.pdf_listbox.selection_set(index+1)
             self.save_settings()
+    
+    def move_pdf_to_top(self):
+        """Moves selected item to the top of the list."""
+        selected_indices = self.pdf_listbox.curselection()
+        if not selected_indices: return
+        index = selected_indices[0]
+        if index > 0:
+            # Remove item from current position
+            pdf_path = self.pdf_files.pop(index)
+            self.pdf_listbox.delete(index)
+            # Insert at top
+            self.pdf_files.insert(0, pdf_path)
+            self.pdf_listbox.insert(0, os.path.basename(pdf_path))
+            self.pdf_listbox.selection_set(0)
+            self.save_settings()
+    
+    def move_pdf_to_bottom(self):
+        """Moves selected item to the bottom of the list."""
+        selected_indices = self.pdf_listbox.curselection()
+        if not selected_indices: return
+        index = selected_indices[0]
+        if index < len(self.pdf_files) - 1:
+            # Remove item from current position
+            pdf_path = self.pdf_files.pop(index)
+            self.pdf_listbox.delete(index)
+            # Insert at bottom
+            self.pdf_files.append(pdf_path)
+            self.pdf_listbox.insert(tk.END, os.path.basename(pdf_path))
+            self.pdf_listbox.selection_set(len(self.pdf_files) - 1)
+            self.save_settings()
 
     def select_output_folder(self):
         """Opens a dialog to select the output folder."""
@@ -775,15 +1097,257 @@ startxref
             self.output_folder_label.config(text=self.output_folder)
             self.print_to_console(f"Output folder set to: {self.output_folder}", "info")
             self.save_settings()
+    
+    def _check_qpdf_executable(self, qpdf_path):
+        """Validates that a qpdf executable works by testing it."""
+        if not qpdf_path or not os.path.exists(qpdf_path):
+            return False
+        
+        try:
+            # Test if qpdf works by calling it with --version
+            result = subprocess.run(
+                [qpdf_path, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return False
+    
+    def _update_qpdf_ui_status(self):
+        """Updates the UI to show the current qpdf status and updates button accordingly."""
+        if self.qpdf_path and self._check_qpdf_executable(self.qpdf_path):
+            # Show shortened path if too long
+            display_path = self.qpdf_path
+            if len(display_path) > 50:
+                display_path = "..." + display_path[-47:]
+            self.qpdf_path_label.config(text=f"✓ {os.path.basename(display_path)}", fg="green")
+            # Change button to "Decrypt PDF"
+            self.decrypt_btn.config(text="Decrypt PDF", command=self.decrypt_pdf)
+            self.print_to_console(f"[INFO] qpdf configured: {self.qpdf_path}", "info")
+        else:
+            self.qpdf_path_label.config(text="Not configured", fg="red")
+            # Change button to "Locate qpdf"
+            self.decrypt_btn.config(text="Locate qpdf", command=self._decrypt_or_locate)
+            if not self.qpdf_path:
+                self.print_to_console("[INFO] qpdf not configured. Click 'Locate qpdf' to set it up.", "warning")
+    
+    def _decrypt_or_locate(self):
+        """Routes to locate qpdf if not configured, otherwise decrypt."""
+        if not self.qpdf_path or not self._check_qpdf_executable(self.qpdf_path):
+            self.locate_qpdf_executable()
+        else:
+            self.decrypt_pdf()
+    
+    def locate_qpdf_executable(self):
+        """Opens a file dialog to locate and configure the qpdf executable."""
+        # Determine initial directory
+        initial_dir = None
+        if self.qpdf_path:
+            initial_dir = os.path.dirname(self.qpdf_path)
+        elif os.path.exists(os.path.join(os.environ.get("ProgramFiles", ""), "qpdf")):
+            initial_dir = os.path.join(os.environ.get("ProgramFiles", ""), "qpdf")
+        else:
+            initial_dir = os.path.expanduser("~")
+        
+        # Open file dialog to select qpdf executable
+        qpdf_path = filedialog.askopenfilename(
+            title="Locate qpdf Executable",
+            initialdir=initial_dir,
+            filetypes=[
+                ("Executable files", "*.exe"),
+                ("All files", "*.*")
+            ]
+        )
+        
+        if not qpdf_path:
+            return  # User cancelled
+        
+        # Validate the selected executable
+        if not self._check_qpdf_executable(qpdf_path):
+            messagebox.showerror(
+                "Invalid qpdf Executable",
+                f"The selected file does not appear to be a valid qpdf executable.\n\n"
+                f"Selected: {qpdf_path}\n\n"
+                f"Please ensure you select the qpdf.exe file from your qpdf installation."
+            )
+            self.print_to_console(f"[ERROR] Invalid qpdf executable selected: {qpdf_path}", "error")
+            return
+        
+        # Save the path
+        self.qpdf_path = qpdf_path
+        self.save_settings()
+        self._update_qpdf_ui_status()
+        self.print_to_console(f"[SUCCESS] qpdf executable configured: {qpdf_path}", "success")
+    
+    def _open_qpdf_download_page(self):
+        """Opens the qpdf releases page in the default browser."""
+        url = "https://github.com/qpdf/qpdf/releases/"
+        try:
+            webbrowser.open(url)
+            self.print_to_console(f"[INFO] Opening qpdf download page: {url}", "info")
+        except Exception as e:
+            self.print_to_console(f"[ERROR] Could not open browser: {e}", "error")
+            messagebox.showerror(
+                "Error",
+                f"Could not open browser. Please manually visit:\n\n{url}\n\nError: {e}"
+            )
+    
+    def decrypt_pdf(self):
+        """Opens a file dialog to select a PDF file, decrypts it with qpdf, and saves to output folder."""
+        # Check if qpdf is configured and available
+        if not self.qpdf_path or not self._check_qpdf_executable(self.qpdf_path):
+            messagebox.showerror(
+                "qpdf Not Configured",
+                "qpdf executable is not configured.\n\n"
+                "Please click 'Locate qpdf executable' to select the qpdf.exe file.\n\n"
+                "You can download qpdf from the releases page (click 'Get qpdf for Decryption')."
+            )
+            self.print_to_console("[ERROR] qpdf not configured. Please locate the qpdf executable first.", "error")
+            return
+        
+        qpdf_path = self.qpdf_path
+        
+        # Open file dialog to select PDF
+        pdf_path = filedialog.askopenfilename(
+            title="Select PDF File to Decrypt",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")]
+        )
+        
+        if not pdf_path:
+            return  # User cancelled
+        
+        # Check if file is encrypted
+        is_encrypted = False
+        try:
+            doc = fitz.open(pdf_path)
+            is_encrypted = doc.needs_pass
+            doc.close()
+        except Exception as e:
+            # If we can't open it, it might be encrypted
+            error_str = str(e).lower()
+            if "password" in error_str or "encrypted" in error_str:
+                is_encrypted = True
+            else:
+                self.print_to_console(f"[ERROR] Could not read PDF file: {e}", "error")
+                messagebox.showerror("Error", f"Could not read PDF file: {e}")
+                return
+        
+        if not is_encrypted:
+            response = messagebox.askyesno(
+                "PDF Not Encrypted",
+                "This PDF file does not appear to be encrypted.\n\n"
+                "Do you still want to process it with qpdf? (This will still create a decrypted copy)"
+            )
+            if not response:
+                return
+        
+        # Prompt for password if needed
+        password = None
+        if is_encrypted:
+            password = simpledialog.askstring(
+                "PDF Password",
+                "This PDF is encrypted. Enter the password (leave empty for no password):",
+                show="*"
+            )
+            if password is None:
+                return  # User cancelled
+            # Convert empty string to None for qpdf (empty string means no password attempt)
+            if password == "":
+                password = None
+        
+        # Generate output filename
+        base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+        output_filename = f"{base_name}_decrypted.pdf"
+        output_path = os.path.join(self.output_folder, output_filename)
+        
+        # Ensure unique filename
+        counter = 1
+        while os.path.exists(output_path):
+            output_filename = f"{base_name}_decrypted_{counter}.pdf"
+            output_path = os.path.join(self.output_folder, output_filename)
+            counter += 1
+        
+        # Run decryption in a separate thread to avoid blocking UI
+        self.print_to_console(f"[INFO] Starting PDF decryption: {os.path.basename(pdf_path)}", "info")
+        
+        def decrypt_thread():
+            try:
+                # Build qpdf command
+                cmd = [qpdf_path]
+                
+                # Add password if provided (qpdf requires --password=password format)
+                if password:
+                    cmd.append(f"--password={password}")
+                
+                # Add decrypt flag and files
+                cmd.extend(["--decrypt", pdf_path, output_path])
+                
+                self.master.after(0, lambda: self.print_to_console(f"[PROGRESS] Running qpdf decryption...", "progress"))
+                
+                # Run qpdf
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=60  # 60 second timeout
+                )
+                
+                if result.returncode == 0:
+                    self.master.after(0, lambda: self.print_to_console(
+                        f"[SUCCESS] PDF decrypted successfully: {output_filename}", "success"
+                    ))
+                    self.master.after(0, lambda: messagebox.showinfo(
+                        "Success",
+                        f"PDF decrypted successfully!\n\nSaved to:\n{output_path}"
+                    ))
+                else:
+                    error_msg = result.stderr.strip() if result.stderr else result.stdout.strip()
+                    self.master.after(0, lambda: self.print_to_console(
+                        f"[ERROR] qpdf decryption failed: {error_msg}", "error"
+                    ))
+                    self.master.after(0, lambda: messagebox.showerror(
+                        "Decryption Failed",
+                        f"Failed to decrypt PDF:\n\n{error_msg}\n\n"
+                        "Please check if the password is correct or if the file is encrypted."
+                    ))
+                    
+            except subprocess.TimeoutExpired:
+                self.master.after(0, lambda: self.print_to_console(
+                    "[ERROR] qpdf operation timed out", "error"
+                ))
+                self.master.after(0, lambda: messagebox.showerror(
+                    "Timeout",
+                    "The decryption operation timed out. The file may be too large or corrupted."
+                ))
+            except Exception as e:
+                self.master.after(0, lambda: self.print_to_console(
+                    f"[ERROR] Unexpected error during decryption: {e}", "error"
+                ))
+                self.master.after(0, lambda: messagebox.showerror(
+                    "Error",
+                    f"An error occurred during decryption:\n\n{e}"
+                ))
+        
+        # Start decryption in background thread
+        threading.Thread(target=decrypt_thread, daemon=True).start()
 
     def update_ui_for_process(self, processing):
         """Updates UI state for start/stop of the merge process."""
         state = tk.DISABLED if processing else tk.NORMAL
         self.start_btn.config(state=tk.DISABLED if processing else tk.NORMAL)
-        self.pause_btn.config(state=tk.NORMAL if processing else tk.DISABLED, text="Pause")
+        self.pause_btn.config(state=tk.NORMAL if processing else tk.DISABLED)
+        # Update pause button text based on state
+        if processing:
+            self.pause_btn.config(text="⏸")
+        else:
+            self.pause_btn.config(text="⏸")
         self.stop_btn.config(state=tk.NORMAL if processing else tk.DISABLED)
         
-        self.add_btn.config(state=state)
+        # Add PDF button is now in toolbar
+        if hasattr(self, 'add_btn'):
+            self.add_btn.config(state=state)
         self.pdf_listbox.config(state=state)
         self.select_folder_btn.config(state=state)
         self.remove_timestamps_checkbox.config(state=state)
@@ -848,11 +1412,11 @@ startxref
         merge_paused = not merge_paused
         if merge_paused:
             merge_pause_event.set()
-            self.pause_btn.config(text="Resume")
+            self.pause_btn.config(text="▶")  # Resume icon when paused
             self.print_to_console("Merge process paused.", "info")
         else:
             merge_pause_event.clear()
-            self.pause_btn.config(text="Pause")
+            self.pause_btn.config(text="⏸")  # Pause icon when running
             self.print_to_console("Merge process resumed.", "info")
 
     def stop_merge(self):
