@@ -34,3 +34,11 @@ safetensors>=0.3.0
 
 # Build tool (for creating executable)
 pyinstaller>=5.13.0
+
+# Multi-format document support
+python-docx>=0.8.11
+odfpy>=1.4.1
+ebooklib>=0.18
+striprtf>=0.0.26
+pypandoc>=1.11
+beautifulsoup4>=4.12.0
