@@ -32,10 +32,11 @@ merge_paused = False
 class PDFMergerApp:
     def __init__(self, master):
         self.master = master
-        master.title("PDF Pure Text Merger & PII Scrubber")
-        master.geometry("800x900") # Increased height for decrypt section
+        master.title("Document Merger & PII Scrubber - Multi-Format Support")
+        master.geometry("800x1000") # Increased height for all sections
 
-        self.pdf_files = [] # List to store full paths of PDF files
+        self.pdf_files = [] # List to store full paths of all supported files
+        self.input_folder = DOWNLOADS_PATH # Default input folder
         self.output_folder = DOWNLOADS_PATH # Default output folder
         self.total_word_count = 0 # Accumulator for total words
 
@@ -43,7 +44,7 @@ class PDFMergerApp:
         self.remove_timestamps_var = tk.BooleanVar(value=False)
         self.remove_images_var = tk.BooleanVar(value=False)
         self.remove_pii_var = tk.BooleanVar(value=False)
-        self.custom_pii_var = tk.StringVar(value="") 
+        self.custom_pii_var = tk.StringVar(value="")
         # New: Variables for splitting output
         self.split_by_words_var = tk.BooleanVar(value=False)
         self.split_word_count_var = tk.StringVar(value="10000")
@@ -51,6 +52,8 @@ class PDFMergerApp:
         self.generate_markdown_var = tk.BooleanVar(value=False)
         # New: Variable for simple markdown (without OCR)
         self.simple_markdown_var = tk.BooleanVar(value=False)
+        # New: Variable for markdown type (radio button)
+        self.markdown_type_var = tk.StringVar(value="simple")  # "simple" or "advanced"
         # New: Variable for GPU acceleration
         self.use_gpu_var = tk.BooleanVar(value=False)
         # New: Variable for models directory
@@ -62,6 +65,10 @@ class PDFMergerApp:
         self.console_filter_level_var = tk.StringVar(value="ALL")
         # Message buffer for filtering
         self.console_message_buffer = []  # List of (message, tag, level) tuples
+        # New: Multi-format support variables
+        self.output_file_type_var = tk.StringVar(value="PDF")  # Output format
+        self.output_filename_var = tk.StringVar(value="")  # Optional custom output filename
+        self.preserve_formatting_var = tk.BooleanVar(value=False)  # Preserve formatting when possible
 
         # Initialize widgets first so console_output exists before load_settings
         self.create_widgets() # Build the GUI elements
@@ -72,75 +79,61 @@ class PDFMergerApp:
 
     def create_widgets(self):
         """Creates and lays out all the GUI widgets."""
-        # --- Top Section: Word Count and Two-Column Layout ---
+        # --- Top Section: Word Count ---
         top_frame = tk.Frame(self.master, bd=2, relief="groove", padx=10, pady=10)
         top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
 
         self.total_words_label = tk.Label(top_frame, text=f"Total Words: {self.total_word_count}", font=("Arial", 14, "bold"))
         self.total_words_label.pack(side=tk.TOP, pady=5)
 
-        # Two-column layout frame
-        columns_frame = tk.Frame(top_frame)
-        columns_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
+        # --- INPUT Configuration Section ---
+        input_config_frame = tk.LabelFrame(self.master, text="INPUT Configuration", bd=2, relief="groove", padx=10, pady=10)
+        input_config_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        # --- Left Column: Output Folder (50%) ---
-        left_column = tk.Frame(columns_frame)
-        left_column.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        # Input Folder row
+        input_folder_frame = tk.Frame(input_config_frame)
+        input_folder_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
 
-        dest_frame = tk.Frame(left_column)
-        dest_frame.pack(side=tk.TOP, fill=tk.X)
+        tk.Label(input_folder_frame, text="Input Folder:").pack(side=tk.LEFT)
+        self.input_folder_label = tk.Label(input_folder_frame, text=self.input_folder, bg="lightgray", anchor="w", relief="sunken")
+        self.input_folder_label.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
+        self.select_input_folder_btn = tk.Button(input_folder_frame, text="Select", command=self.select_input_folder)
+        self.select_input_folder_btn.pack(side=tk.LEFT, padx=2)
 
-        tk.Label(dest_frame, text="Output Folder:").pack(side=tk.LEFT)
-        self.output_folder_label = tk.Label(dest_frame, text=self.output_folder, bg="lightgray", anchor="w", relief="sunken")
-        self.output_folder_label.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
-        self.select_folder_btn = tk.Button(dest_frame, text="Select", command=self.select_output_folder)
-        self.select_folder_btn.pack(side=tk.RIGHT)
+        # Separator
+        separator_input = tk.Frame(input_folder_frame, width=2, bg="gray", relief=tk.SUNKEN)
+        separator_input.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=2)
 
-        # --- Right Column: PDF Decryption (50%) ---
-        right_column = tk.Frame(columns_frame)
-        right_column.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        # Add File(s) button
+        self.add_btn = tk.Button(input_folder_frame, text="Add File(s)", command=self.add_pdf_file, width=12)
+        self.add_btn.pack(side=tk.LEFT, padx=2)
 
-        decrypt_frame = tk.Frame(right_column)
-        decrypt_frame.pack(side=tk.TOP, fill=tk.X)
+        # Files for Merger list
+        tk.Label(input_config_frame, text="Files for Merger:", font=("Arial", 12)).pack(side=tk.TOP, anchor="w", pady=(5,2))
 
-        decrypt_left = tk.Frame(decrypt_frame)
-        decrypt_left.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        list_container = tk.Frame(input_config_frame)
+        list_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        decrypt_right = tk.Frame(decrypt_frame)
-        decrypt_right.pack(side=tk.RIGHT)
+        self.pdf_listbox = tk.Listbox(list_container, selectmode=tk.EXTENDED, height=8)
+        self.pdf_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        self.pdf_listbox.bind("<<ListboxSelect>>", self.on_listbox_select)
 
-        tk.Label(decrypt_left, text="PDF Decryption (qpdf):", font=("Arial", 12)).pack(side=tk.LEFT, padx=5)
-        # Dynamic button: "Locate qpdf" when not configured, "Decrypt PDF" when configured
-        self.decrypt_btn = tk.Button(decrypt_left, text="Locate qpdf", command=self._decrypt_or_locate, width=15)
-        self.decrypt_btn.pack(side=tk.LEFT, padx=5, pady=5)
+        scrollbar = tk.Scrollbar(list_container, orient="vertical", command=self.pdf_listbox.yview)
+        scrollbar.pack(side=tk.LEFT, fill=tk.Y)
+        self.pdf_listbox.config(yscrollcommand=scrollbar.set)
 
-        # Display current qpdf path (if configured)
-        self.qpdf_path_label = tk.Label(decrypt_left, text="", fg="green", font=("Arial", 8))
-        self.qpdf_path_label.pack(side=tk.LEFT, padx=5, pady=5)
+        # Control Buttons Section (toolbar below the list)
+        control_frame = tk.Frame(input_config_frame)
+        control_frame.pack(side=tk.TOP, fill=tk.X, pady=(10, 0))
 
-        # Add link to download qpdf
-        link_label = tk.Label(
-            decrypt_right, 
-            text="Get qpdf for Decryption", 
-            fg="blue", 
-            cursor="hand2", 
-            font=("Arial", 9, "underline")
-        )
-        link_label.pack(side=tk.RIGHT, padx=5)
-        link_label.bind("<Button-1>", lambda e: self._open_qpdf_download_page())
-
-        # --- Control Buttons Section (Icon Toolbar) ---
-        control_frame = tk.Frame(self.master, bd=2, relief="groove", padx=10, pady=10)
-        control_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
-        
         # Toolbar with icon buttons
         toolbar = tk.Frame(control_frame)
         toolbar.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
+
         # Play button (Start Merge)
         self.start_btn = tk.Button(
-            toolbar, 
-            text="▶", 
+            toolbar,
+            text="▶",
             font=("Arial", 14, "bold"),
             command=self.start_merge,
             width=3,
@@ -150,11 +143,11 @@ class PDFMergerApp:
         self.start_btn.pack(side=tk.LEFT, padx=2)
         self.start_btn.bind("<Enter>", lambda e: self.start_btn.config(cursor="hand2"))
         self.start_btn.bind("<Leave>", lambda e: self.start_btn.config(cursor=""))
-        
+
         # Stop button (Stop Merge)
         self.stop_btn = tk.Button(
-            toolbar, 
-            text="■", 
+            toolbar,
+            text="■",
             font=("Arial", 14, "bold"),
             command=self.stop_merge,
             width=3,
@@ -164,11 +157,11 @@ class PDFMergerApp:
         )
         self.stop_btn.pack(side=tk.LEFT, padx=2)
         self.stop_btn.bind("<Enter>", lambda e: self.stop_btn.config(cursor="hand2") if self.stop_btn.cget("state") == tk.NORMAL else None)
-        
+
         # Pause button (using double bar symbol)
         self.pause_btn = tk.Button(
-            toolbar, 
-            text="⏸", 
+            toolbar,
+            text="⏸",
             font=("Arial", 14, "bold"),
             command=self.pause_merge,
             width=3,
@@ -178,115 +171,153 @@ class PDFMergerApp:
         )
         self.pause_btn.pack(side=tk.LEFT, padx=2)
         self.pause_btn.bind("<Enter>", lambda e: self.pause_btn.config(cursor="hand2") if self.pause_btn.cget("state") == tk.NORMAL else None)
-        
+
         # Separator 1
         separator1 = tk.Frame(toolbar, width=2, bg="gray", relief=tk.SUNKEN)
         separator1.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=2)
-        
-        # Add PDF button (text button for clarity)
-        self.add_btn = tk.Button(toolbar, text="Add PDF", command=self.add_pdf_file, width=12)
-        self.add_btn.pack(side=tk.LEFT, padx=2)
-        
-        # Separator 2
-        separator2 = tk.Frame(toolbar, width=2, bg="gray", relief=tk.SUNKEN)
-        separator2.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=2)
-        
+
         # Move Up button (↑)
         self.move_up_btn = tk.Button(
-            toolbar, 
-            text="↑", 
+            toolbar,
+            text="↑",
             font=("Arial", 14, "bold"),
-            command=self.move_pdf_up, 
+            command=self.move_pdf_up,
             state=tk.DISABLED,
             width=3,
             relief=tk.RAISED,
             bd=1
         )
         self.move_up_btn.pack(side=tk.LEFT, padx=2)
-        
+
         # Move Down button (↓)
         self.move_down_btn = tk.Button(
-            toolbar, 
-            text="↓", 
+            toolbar,
+            text="↓",
             font=("Arial", 14, "bold"),
-            command=self.move_pdf_down, 
+            command=self.move_pdf_down,
             state=tk.DISABLED,
             width=3,
             relief=tk.RAISED,
             bd=1
         )
         self.move_down_btn.pack(side=tk.LEFT, padx=2)
-        
+
         # Move to Top button (⇈)
         self.move_to_top_btn = tk.Button(
-            toolbar, 
-            text="⇈", 
+            toolbar,
+            text="⇈",
             font=("Arial", 14, "bold"),
-            command=self.move_pdf_to_top, 
+            command=self.move_pdf_to_top,
             state=tk.DISABLED,
             width=3,
             relief=tk.RAISED,
             bd=1
         )
         self.move_to_top_btn.pack(side=tk.LEFT, padx=2)
-        
+
         # Move to Bottom button (⇊)
         self.move_to_bottom_btn = tk.Button(
-            toolbar, 
-            text="⇊", 
+            toolbar,
+            text="⇊",
             font=("Arial", 14, "bold"),
-            command=self.move_pdf_to_bottom, 
+            command=self.move_pdf_to_bottom,
             state=tk.DISABLED,
             width=3,
             relief=tk.RAISED,
             bd=1
         )
         self.move_to_bottom_btn.pack(side=tk.LEFT, padx=2)
-        
-        # Separator 3
-        separator3 = tk.Frame(toolbar, width=2, bg="gray", relief=tk.SUNKEN)
-        separator3.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=2)
-        
+
+        # Separator 2
+        separator2 = tk.Frame(toolbar, width=2, bg="gray", relief=tk.SUNKEN)
+        separator2.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=2)
+
         # Remove Selected button (text button)
         self.remove_btn = tk.Button(toolbar, text="Remove Selected", command=self.remove_pdf_file, state=tk.DISABLED, width=15)
         self.remove_btn.pack(side=tk.LEFT, padx=2)
-        
+
         # Clear All button (text button)
         self.clear_all_btn = tk.Button(toolbar, text="Clear All", command=self.clear_all_pdfs, state=tk.DISABLED, width=12)
         self.clear_all_btn.pack(side=tk.LEFT, padx=2)
 
-        # --- File List Section ---
-        list_frame = tk.Frame(self.master, bd=2, relief="groove", padx=10, pady=10)
-        list_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # --- Tools Section ---
+        tools_frame = tk.LabelFrame(self.master, text="Tools", bd=2, relief="groove", padx=10, pady=10)
+        tools_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
 
-        tk.Label(list_frame, text="PDF Files for Merger:", font=("Arial", 12)).pack(side=tk.TOP, anchor="w")
+        # PDF Decryption
+        decrypt_frame = tk.Frame(tools_frame)
+        decrypt_frame.pack(side=tk.TOP, fill=tk.X)
 
-        self.pdf_listbox = tk.Listbox(list_frame, selectmode=tk.EXTENDED, height=10)
-        self.pdf_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
-        self.pdf_listbox.bind("<<ListboxSelect>>", self.on_listbox_select)
+        tk.Label(decrypt_frame, text="PDF Decryption (qpdf):", font=("Arial", 12)).pack(side=tk.LEFT, padx=5)
+        # Dynamic button: "Locate qpdf" when not configured, "Decrypt PDF" when configured
+        self.decrypt_btn = tk.Button(decrypt_frame, text="Locate qpdf", command=self._decrypt_or_locate, width=15)
+        self.decrypt_btn.pack(side=tk.LEFT, padx=5, pady=5)
 
-        scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=self.pdf_listbox.yview)
-        scrollbar.pack(side=tk.LEFT, fill=tk.Y)
-        self.pdf_listbox.config(yscrollcommand=scrollbar.set)
+        # Display current qpdf path (if configured)
+        self.qpdf_path_label = tk.Label(decrypt_frame, text="", fg="green", font=("Arial", 8))
+        self.qpdf_path_label.pack(side=tk.LEFT, padx=5, pady=5)
 
-        # --- Configuration Section (Two-Column Layout) ---
-        config_frame = tk.LabelFrame(self.master, text="Configuration", bd=2, relief="groove", padx=10, pady=10)
-        config_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
+        # Add link to download qpdf
+        link_label = tk.Label(
+            decrypt_frame,
+            text="Get qpdf for Decryption",
+            fg="blue",
+            cursor="hand2",
+            font=("Arial", 9, "underline")
+        )
+        link_label.pack(side=tk.RIGHT, padx=5)
+        link_label.bind("<Button-1>", lambda e: self._open_qpdf_download_page())
 
-        # Create two-column layout
-        config_columns = tk.Frame(config_frame)
+        # --- OUTPUT Configuration Section ---
+        output_config_frame = tk.LabelFrame(self.master, text="OUTPUT Configuration", bd=2, relief="groove", padx=10, pady=10)
+        output_config_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
+
+        # Output File Type dropdown (at top)
+        output_type_frame = tk.Frame(output_config_frame)
+        output_type_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 5))
+
+        tk.Label(output_type_frame, text="Select output file type:").pack(side=tk.LEFT)
+        output_types = ["PDF", "ODT", "DOCX", "TXT", "RTF", "EPUB", "MD"]
+        self.output_type_dropdown = tk.OptionMenu(output_type_frame, self.output_file_type_var, *output_types, command=self.on_output_type_change)
+        self.output_type_dropdown.pack(side=tk.LEFT, padx=5)
+
+        # Optional output filename
+        output_filename_frame = tk.Frame(output_config_frame)
+        output_filename_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 5))
+
+        tk.Label(output_filename_frame, text="Output filename (optional):").pack(side=tk.LEFT)
+        self.output_filename_entry = tk.Entry(output_filename_frame, textvariable=self.output_filename_var, width=30)
+        self.output_filename_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        self.output_filename_var.trace_add("write", lambda *args: self.save_settings())
+
+        # Output Folder
+        output_folder_frame = tk.Frame(output_config_frame)
+        output_folder_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
+
+        tk.Label(output_folder_frame, text="Output Folder:").pack(side=tk.LEFT)
+        self.output_folder_label = tk.Label(output_folder_frame, text=self.output_folder, bg="lightgray", anchor="w", relief="sunken")
+        self.output_folder_label.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
+        self.select_folder_btn = tk.Button(output_folder_frame, text="Select", command=self.select_output_folder)
+        self.select_folder_btn.pack(side=tk.RIGHT)
+
+        # Create two-column layout for options
+        config_columns = tk.Frame(output_config_frame)
         config_columns.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         # --- Left Column: Basic Options (50%) ---
         left_column = tk.Frame(config_columns)
         left_column.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
 
+        # Preserve Formatting checkbox
+        self.preserve_formatting_checkbox = tk.Checkbutton(left_column, text="Preserve Formatting (when possible)", variable=self.preserve_formatting_var, command=lambda: self.log_and_save_setting("Preserve Formatting", self.preserve_formatting_var), state=tk.DISABLED)
+        self.preserve_formatting_checkbox.pack(anchor="w", padx=5, pady=2)
+
         self.remove_timestamps_checkbox = tk.Checkbutton(left_column, text="Remove Timestamps", variable=self.remove_timestamps_var, command=lambda: self.log_and_save_setting("Timestamps", self.remove_timestamps_var))
         self.remove_timestamps_checkbox.pack(anchor="w", padx=5, pady=2)
 
         self.remove_images_checkbox = tk.Checkbutton(left_column, text="Remove Images (extract text only)", variable=self.remove_images_var, command=lambda: self.log_and_save_setting("Images", self.remove_images_var))
         self.remove_images_checkbox.pack(anchor="w", padx=5, pady=2)
-        
+
         self.remove_pii_checkbox = tk.Checkbutton(left_column, text="Remove PII (Names, Addresses, etc.)", variable=self.remove_pii_var, command=self.on_pii_checkbox_change)
         self.remove_pii_checkbox.pack(anchor="w", padx=5, pady=2)
 
@@ -299,65 +330,90 @@ class PDFMergerApp:
         # --- Right Column: Advanced Options (50%) ---
         right_column = tk.Frame(config_columns)
         right_column.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
-        
+
         # Split by words widgets
         self.split_by_words_checkbox = tk.Checkbutton(right_column, text="Split output by words", variable=self.split_by_words_var, command=self.on_split_checkbox_change)
         self.split_by_words_checkbox.pack(anchor="w", padx=5, pady=(0,2))
-        
+
         self.split_word_count_label = tk.Label(right_column, text="Number of words per file:")
         self.split_word_count_label.pack(anchor="w", padx=25, pady=(5,0))
         self.split_word_count_entry = tk.Entry(right_column, textvariable=self.split_word_count_var)
         self.split_word_count_entry.pack(fill=tk.X, padx=25, pady=2)
         self.split_word_count_var.trace_add("write", lambda *args: self.save_settings())
-        
-        # Markdown output checkbox and preload button
-        markdown_frame = tk.Frame(right_column)
-        markdown_frame.pack(fill=tk.X, padx=5, pady=(10,2))
-        
-        self.generate_markdown_checkbox = tk.Checkbutton(markdown_frame, text="Also generate Markdown output (.md)", variable=self.generate_markdown_var, command=self.on_markdown_checkbox_change)
-        self.generate_markdown_checkbox.pack(side=tk.LEFT, anchor="w")
-        
-        self.preload_models_btn = tk.Button(markdown_frame, text="Select Models Dir", command=self.preload_marker_models, width=15)
-        self.preload_models_btn.pack(side=tk.RIGHT, padx=(10,0))
-        
-        # Models path label (initially hidden)
-        self.models_path_label = tk.Label(right_column, text="", fg="green", font=("Arial", 9))
-        self.models_path_label.pack(anchor="w", padx=25, pady=(2,5))
-        
-        # Simple Markdown checkbox (no OCR)
-        self.simple_markdown_checkbox = tk.Checkbutton(right_column, text="Simple Markdown (fast, no OCR - extracts existing text only)", variable=self.simple_markdown_var, command=self.on_simple_markdown_checkbox_change)
-        self.simple_markdown_checkbox.pack(anchor="w", padx=25, pady=2)
-        
-        # GPU acceleration checkbox
-        self.use_gpu_checkbox = tk.Checkbutton(right_column, text="Use GPU acceleration (if available)", variable=self.use_gpu_var, command=self.on_gpu_checkbox_change)
-        self.use_gpu_checkbox.pack(anchor="w", padx=25, pady=2)
+
+        # Markdown Options label and frame
+        self.markdown_options_label = tk.Label(right_column, text="Markdown Options (.md):", font=("Arial", 10, "bold"), state=tk.DISABLED)
+        self.markdown_options_label.pack(anchor="w", padx=5, pady=(10,5))
+
+        markdown_options_frame = tk.Frame(right_column)
+        markdown_options_frame.pack(fill=tk.X, padx=5, pady=2)
+
+        # Radio buttons for markdown type
+        self.simple_markdown_radio = tk.Radiobutton(
+            markdown_options_frame,
+            text="Simple Markdown (fast, no OCR)",
+            variable=self.markdown_type_var,
+            value="simple",
+            command=self.on_markdown_type_change,
+            state=tk.DISABLED
+        )
+        self.simple_markdown_radio.pack(anchor="w", padx=20, pady=2)
+
+        self.advanced_markdown_radio = tk.Radiobutton(
+            markdown_options_frame,
+            text="Advanced Markdown (with OCR)",
+            variable=self.markdown_type_var,
+            value="advanced",
+            command=self.on_markdown_type_change,
+            state=tk.DISABLED
+        )
+        self.advanced_markdown_radio.pack(anchor="w", padx=20, pady=2)
+
+        # GPU checkbox (under Advanced Markdown)
+        self.use_gpu_checkbox = tk.Checkbutton(
+            markdown_options_frame,
+            text="Use GPU acceleration (if available)",
+            variable=self.use_gpu_var,
+            command=self.on_gpu_checkbox_change,
+            state=tk.DISABLED
+        )
+        self.use_gpu_checkbox.pack(anchor="w", padx=40, pady=2)
+
+        # Select Models Dir button (under Advanced Markdown)
+        models_btn_frame = tk.Frame(markdown_options_frame)
+        models_btn_frame.pack(fill=tk.X, padx=40, pady=2)
+
+        self.preload_models_btn = tk.Button(models_btn_frame, text="Select Models Dir", command=self.preload_marker_models, width=15, state=tk.DISABLED)
+        self.preload_models_btn.pack(side=tk.LEFT)
+
+        # Models path label
+        self.models_path_label = tk.Label(markdown_options_frame, text="", fg="green", font=("Arial", 9))
+        self.models_path_label.pack(anchor="w", padx=40, pady=(2,5))
 
         # --- Console Output Section ---
-        console_frame = tk.Frame(self.master, bd=2, relief="groove", padx=10, pady=10)
+        console_frame = tk.LabelFrame(self.master, text="Console Output", bd=2, relief="groove", padx=10, pady=10)
         console_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         # Console header with controls
         console_header = tk.Frame(console_frame)
         console_header.pack(side=tk.TOP, fill=tk.X, pady=(0, 5))
-        
-        tk.Label(console_header, text="Console Output:", font=("Arial", 12)).pack(side=tk.LEFT, padx=(0, 10))
-        
+
         # Show/Hide checkbox
         self.console_show_checkbox = tk.Checkbutton(
-            console_header, 
-            text="Show Console", 
+            console_header,
+            text="Show Console",
             variable=self.console_visible_var,
             command=self._toggle_console_visibility
         )
         self.console_show_checkbox.pack(side=tk.LEFT, padx=(0, 10))
-        
+
         # Filter dropdown
         tk.Label(console_header, text="Filter:", font=("Arial", 10)).pack(side=tk.LEFT, padx=(0, 5))
         filter_levels = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
         self.console_filter_dropdown = tk.OptionMenu(console_header, self.console_filter_level_var, *filter_levels, command=self._on_filter_change)
         self.console_filter_dropdown.pack(side=tk.LEFT)
-        
-        self.console_output = scrolledtext.ScrolledText(console_frame, wrap=tk.WORD, height=10, bg="black", fg="lime", font=("Consolas", 10))
+
+        self.console_output = scrolledtext.ScrolledText(console_frame, wrap=tk.WORD, height=8, bg="black", fg="lime", font=("Consolas", 10))
         self.console_output.pack(fill=tk.BOTH, expand=True)
         self.console_output.tag_config("info", foreground="white")
         self.console_output.tag_config("error", foreground="red")
@@ -366,13 +422,13 @@ class PDFMergerApp:
         self.console_output.tag_config("warning", foreground="yellow")
         self.console_output.tag_config("debug", foreground="gray")
 
-        self.print_to_console("Welcome to PDF Merger & PII Scrubber!", "info")
-        self.print_to_console("Select PDF files and click 'Start Merge'.", "info")
+        self.print_to_console("Welcome to Document Merger & PII Scrubber - Multi-Format Support!", "info")
+        self.print_to_console("Select files (PDF, ODT, DOCX, TXT, RTF, EPUB, MD) and click 'Start Merge'.", "info")
         self.print_to_console(f"Default output folder: {self.output_folder}", "info")
-        
+
         # Check qpdf availability on startup and update UI
         self._update_qpdf_ui_status()
-        
+
         # Check GPU availability
         try:
             import torch
@@ -383,7 +439,51 @@ class PDFMergerApp:
                 self.print_to_console("[INFO] No GPU detected, CPU processing available", "info")
         except ImportError:
             self.print_to_console("[INFO] PyTorch not available for GPU detection", "info")
-        
+
+    def select_input_folder(self):
+        """Select the input folder for file browsing."""
+        folder = filedialog.askdirectory(initialdir=self.input_folder, title="Select Input Folder")
+        if folder:
+            self.input_folder = folder
+            self.input_folder_label.config(text=folder)
+            self.print_to_console(f"Input folder set to: {folder}", "info")
+            self.save_settings()
+
+    def on_output_type_change(self, *args):
+        """Handle output file type change."""
+        output_type = self.output_file_type_var.get()
+        self.print_to_console(f"Output type changed to: {output_type}", "info")
+
+        # Enable/disable Markdown Options based on output type
+        if output_type == "MD":
+            self.markdown_options_label.config(state=tk.NORMAL)
+            self.simple_markdown_radio.config(state=tk.NORMAL)
+            self.advanced_markdown_radio.config(state=tk.NORMAL)
+            self._update_markdown_controls_state()
+        else:
+            self.markdown_options_label.config(state=tk.DISABLED)
+            self.simple_markdown_radio.config(state=tk.DISABLED)
+            self.advanced_markdown_radio.config(state=tk.DISABLED)
+            self.use_gpu_checkbox.config(state=tk.DISABLED)
+            self.preload_models_btn.config(state=tk.DISABLED)
+
+        self.save_settings()
+
+    def on_markdown_type_change(self):
+        """Handle markdown type radio button change."""
+        self._update_markdown_controls_state()
+        self.save_settings()
+
+    def _update_markdown_controls_state(self):
+        """Enable/disable markdown controls based on type selection."""
+        if self.output_file_type_var.get() == "MD":
+            if self.markdown_type_var.get() == "advanced":
+                self.use_gpu_checkbox.config(state=tk.NORMAL)
+                self.preload_models_btn.config(state=tk.NORMAL)
+            else:
+                self.use_gpu_checkbox.config(state=tk.DISABLED)
+                self.preload_models_btn.config(state=tk.DISABLED)
+
     def on_pii_checkbox_change(self):
         """Handles changes to the PII checkbox state."""
         self.log_and_save_setting("PII", self.remove_pii_var)
@@ -843,11 +943,12 @@ startxref
                 with open(SETTINGS_FILE, "r") as f:
                     settings = json.load(f)
                     self.pdf_files = settings.get("pdf_files", [])
+                    self.input_folder = settings.get("input_folder", DOWNLOADS_PATH)
                     self.output_folder = settings.get("output_folder", DOWNLOADS_PATH)
                     self.remove_timestamps_var.set(settings.get("remove_timestamps_enabled", False))
                     self.remove_images_var.set(settings.get("remove_images_enabled", False))
                     self.remove_pii_var.set(settings.get("remove_pii_enabled", False))
-                    self.custom_pii_var.set(settings.get("custom_pii_strings", "")) 
+                    self.custom_pii_var.set(settings.get("custom_pii_strings", ""))
                     # New: Load split settings
                     self.split_by_words_var.set(settings.get("split_by_words_enabled", False))
                     self.split_word_count_var.set(settings.get("split_word_count", "10000"))
@@ -855,6 +956,8 @@ startxref
                     self.generate_markdown_var.set(settings.get("generate_markdown_enabled", False))
                     # New: Load simple markdown setting
                     self.simple_markdown_var.set(settings.get("simple_markdown_enabled", False))
+                    # New: Load markdown type
+                    self.markdown_type_var.set(settings.get("markdown_type", "simple"))
                     # New: Load GPU setting
                     self.use_gpu_var.set(settings.get("use_gpu_enabled", False))
                     # New: Load models directory
@@ -864,29 +967,35 @@ startxref
                     # New: Load console settings
                     self.console_visible_var.set(settings.get("console_visible", True))
                     self.console_filter_level_var.set(settings.get("console_filter_level", "ALL"))
-                    
+                    # New: Load multi-format settings
+                    self.output_file_type_var.set(settings.get("output_file_type", "PDF"))
+                    self.output_filename_var.set(settings.get("output_filename", ""))
+                    self.preserve_formatting_var.set(settings.get("preserve_formatting", False))
+
                     self.print_to_console(f"Loaded settings from {SETTINGS_FILE}", "info")
-                    
+
                     self.total_word_count = 0
                     files_to_keep = []
-                    self.pdf_listbox.delete(0, tk.END) 
-                    for pdf_path in self.pdf_files:
-                        if os.path.exists(pdf_path):
+                    self.pdf_listbox.delete(0, tk.END)
+                    for file_path in self.pdf_files:
+                        if os.path.exists(file_path):
                             try:
-                                text = self._extract_text_from_pdf(pdf_path) 
+                                text = self._extract_text_from_file(file_path)
                                 self.total_word_count += self._count_words(text)
-                                files_to_keep.append(pdf_path)
-                                self.pdf_listbox.insert(tk.END, os.path.basename(pdf_path))
+                                files_to_keep.append(file_path)
+                                self.pdf_listbox.insert(tk.END, os.path.basename(file_path))
                             except Exception as e:
-                                self.print_to_console(f"Error processing {os.path.basename(pdf_path)} on load: {e}", "error")
+                                self.print_to_console(f"Error processing {os.path.basename(file_path)} on load: {e}", "error")
                         else:
-                            self.print_to_console(f"Warning: Stored file not found: {pdf_path}. Removing from list.", "warning")
+                            self.print_to_console(f"Warning: Stored file not found: {file_path}. Removing from list.", "warning")
                     self.pdf_files = files_to_keep
             except Exception as e:
                 self.print_to_console(f"Error loading settings: {e}. Starting with defaults.", "error")
                 self.pdf_files = []
+                self.input_folder = DOWNLOADS_PATH
                 self.output_folder = DOWNLOADS_PATH
-        
+
+        self.input_folder_label.config(text=self.input_folder)
         self.output_folder_label.config(text=self.output_folder)
         self.on_listbox_select(None)
         
@@ -910,6 +1019,7 @@ startxref
         """Saves current settings to settings.json."""
         settings = {
             "pdf_files": self.pdf_files,
+            "input_folder": self.input_folder,
             "output_folder": self.output_folder,
             "remove_timestamps_enabled": self.remove_timestamps_var.get(),
             "remove_images_enabled": self.remove_images_var.get(),
@@ -922,6 +1032,8 @@ startxref
             "generate_markdown_enabled": self.generate_markdown_var.get(),
             # New: Save simple markdown setting
             "simple_markdown_enabled": self.simple_markdown_var.get(),
+            # New: Save markdown type
+            "markdown_type": self.markdown_type_var.get(),
             # New: Save GPU setting
             "use_gpu_enabled": self.use_gpu_var.get(),
             # New: Save models directory
@@ -930,13 +1042,102 @@ startxref
             "qpdf_path": self.qpdf_path,
             # New: Save console settings
             "console_visible": self.console_visible_var.get(),
-            "console_filter_level": self.console_filter_level_var.get()
+            "console_filter_level": self.console_filter_level_var.get(),
+            # New: Save multi-format settings
+            "output_file_type": self.output_file_type_var.get(),
+            "output_filename": self.output_filename_var.get(),
+            "preserve_formatting": self.preserve_formatting_var.get()
         }
         try:
             with open(SETTINGS_FILE, "w") as f:
                 json.dump(settings, f, indent=4)
         except Exception as e:
             self.print_to_console(f"Error saving settings: {e}", "error")
+
+    def _extract_text_from_file(self, file_path):
+        """Extracts text from any supported file format."""
+        ext = os.path.splitext(file_path)[1].lower()
+
+        if ext == '.pdf':
+            return self._extract_text_from_pdf(file_path)
+        elif ext == '.txt':
+            return self._extract_text_from_txt(file_path)
+        elif ext == '.md':
+            return self._extract_text_from_md(file_path)
+        elif ext == '.docx':
+            return self._extract_text_from_docx(file_path)
+        elif ext == '.odt':
+            return self._extract_text_from_odt(file_path)
+        elif ext == '.rtf':
+            return self._extract_text_from_rtf(file_path)
+        elif ext == '.epub':
+            return self._extract_text_from_epub(file_path)
+        else:
+            raise ValueError(f"Unsupported file format: {ext}")
+
+    def _extract_text_from_txt(self, file_path):
+        """Extracts text from TXT file."""
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            return f.read()
+
+    def _extract_text_from_md(self, file_path):
+        """Extracts text from Markdown file."""
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            return f.read()
+
+    def _extract_text_from_docx(self, file_path):
+        """Extracts text from DOCX file."""
+        try:
+            from docx import Document
+            doc = Document(file_path)
+            text = []
+            for paragraph in doc.paragraphs:
+                text.append(paragraph.text)
+            return '\n'.join(text)
+        except Exception as e:
+            raise Exception(f"Error reading DOCX file: {e}")
+
+    def _extract_text_from_odt(self, file_path):
+        """Extracts text from ODT file."""
+        try:
+            from odf import text, teletype
+            from odf.opendocument import load
+            doc = load(file_path)
+            all_text = []
+            for paragraph in doc.getElementsByType(text.P):
+                all_text.append(teletype.extractText(paragraph))
+            return '\n'.join(all_text)
+        except Exception as e:
+            raise Exception(f"Error reading ODT file: {e}")
+
+    def _extract_text_from_rtf(self, file_path):
+        """Extracts text from RTF file."""
+        try:
+            from striprtf.striprtf import rtf_to_text
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                rtf_content = f.read()
+            return rtf_to_text(rtf_content)
+        except Exception as e:
+            raise Exception(f"Error reading RTF file: {e}")
+
+    def _extract_text_from_epub(self, file_path):
+        """Extracts text from EPUB file."""
+        try:
+            import ebooklib
+            from ebooklib import epub
+            from bs4 import BeautifulSoup
+
+            book = epub.read_epub(file_path)
+            text_content = []
+
+            for item in book.get_items():
+                if item.get_type() == ebooklib.ITEM_DOCUMENT:
+                    soup = BeautifulSoup(item.get_content(), 'html.parser')
+                    text_content.append(soup.get_text())
+
+            return '\n'.join(text_content)
+        except Exception as e:
+            raise Exception(f"Error reading EPUB file: {e}")
 
     def _extract_text_from_pdf(self, pdf_path):
         """Extracts text from a PDF for word counting."""
@@ -956,7 +1157,7 @@ startxref
                 if self.remove_timestamps_var.get():
                     page_text = re.sub(timestamp_regex, '', page_text)
                 text += page_text + " "
-            
+
             if close_doc:
                 doc.close()
         except Exception as e:
@@ -970,33 +1171,165 @@ startxref
         """Counts words in a given text string."""
         return len(re.findall(r'\b\w+\b', text.lower()))
 
+    def _generate_output_file(self, text, output_filepath):
+        """Generate output file in the selected format."""
+        output_type = self.output_file_type_var.get().lower()
+
+        if output_type == 'pdf':
+            self._generate_pdf(text, output_filepath)
+        elif output_type == 'txt':
+            self._generate_txt(text, output_filepath)
+        elif output_type == 'md':
+            self._generate_md(text, output_filepath)
+        elif output_type == 'docx':
+            self._generate_docx(text, output_filepath)
+        elif output_type == 'odt':
+            self._generate_odt(text, output_filepath)
+        elif output_type == 'rtf':
+            self._generate_rtf(text, output_filepath)
+        elif output_type == 'epub':
+            self._generate_epub(text, output_filepath)
+        else:
+            raise ValueError(f"Unsupported output format: {output_type}")
+
+    def _generate_pdf(self, text, output_filepath):
+        """Generate PDF output from text."""
+        doc = fitz.open()
+        page = doc.new_page()
+        text_rect = fitz.Rect(50, 50, page.rect.width - 50, page.rect.height - 50)
+        page.insert_textbox(text_rect, text, fontsize=11, fontname="helv")
+        doc.save(output_filepath)
+        doc.close()
+
+    def _generate_txt(self, text, output_filepath):
+        """Generate TXT output from text."""
+        with open(output_filepath, 'w', encoding='utf-8') as f:
+            f.write(text)
+
+    def _generate_md(self, text, output_filepath):
+        """Generate MD (Markdown) output from text."""
+        with open(output_filepath, 'w', encoding='utf-8') as f:
+            f.write(text)
+
+    def _generate_docx(self, text, output_filepath):
+        """Generate DOCX output from text."""
+        from docx import Document
+        doc = Document()
+        # Split text by paragraphs and add to document
+        paragraphs = text.split('\n')
+        for para in paragraphs:
+            if para.strip():
+                doc.add_paragraph(para)
+        doc.save(output_filepath)
+
+    def _generate_odt(self, text, output_filepath):
+        """Generate ODT output from text."""
+        from odf.opendocument import OpenDocumentText
+        from odf.text import P
+        from odf import text as odf_text
+
+        doc = OpenDocumentText()
+        paragraphs = text.split('\n')
+        for para in paragraphs:
+            if para.strip():
+                p = P(text=para)
+                doc.text.appendChild(p)
+        doc.save(output_filepath)
+
+    def _generate_rtf(self, text, output_filepath):
+        """Generate RTF output from text using pypandoc."""
+        try:
+            import pypandoc
+            # Write text to a temporary file
+            temp_txt = output_filepath + ".tmp.txt"
+            with open(temp_txt, 'w', encoding='utf-8') as f:
+                f.write(text)
+            # Convert using pypandoc
+            pypandoc.convert_file(temp_txt, 'rtf', outputfile=output_filepath)
+            # Clean up temp file
+            os.remove(temp_txt)
+        except Exception as e:
+            # Fallback to basic RTF if pypandoc fails
+            with open(output_filepath, 'w', encoding='utf-8') as f:
+                f.write(r'{\rtf1\ansi\deff0 {\fonttbl {\f0 Times New Roman;}}')
+                f.write(r'\f0\fs24 ')
+                # Escape special RTF characters
+                rtf_text = text.replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
+                f.write(rtf_text)
+                f.write(r'}')
+
+    def _generate_epub(self, text, output_filepath):
+        """Generate EPUB output from text."""
+        import ebooklib
+        from ebooklib import epub
+
+        book = epub.EpubBook()
+        book.set_identifier('merged_document')
+        book.set_title('Merged Document')
+        book.set_language('en')
+
+        # Create chapter
+        c1 = epub.EpubHtml(title='Chapter 1', file_name='chap_01.xhtml', lang='en')
+        # Convert text to HTML paragraphs
+        html_content = '<h1>Merged Document</h1>'
+        paragraphs = text.split('\n')
+        for para in paragraphs:
+            if para.strip():
+                html_content += f'<p>{para}</p>'
+        c1.content = html_content
+
+        # Add chapter to book
+        book.add_item(c1)
+        book.toc = (epub.Link('chap_01.xhtml', 'Chapter 1', 'chap_01'),)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.spine = ['nav', c1]
+
+        # Write EPUB file
+        epub.write_epub(output_filepath, book, {})
+
     def update_word_count_display(self):
         """Updates the total word count label in the GUI."""
         self.total_words_label.config(text=f"Total Words: {self.total_word_count}")
 
     def add_pdf_file(self):
-        """Adds selected PDF files to the list."""
-        file_paths = filedialog.askopenfilenames(title="Select PDF Files", filetypes=[("PDF files", "*.pdf")])
+        """Adds selected files (PDF, ODT, DOCX, TXT, RTF, EPUB, MD) to the list."""
+        filetypes = [
+            ("All Supported Files", "*.pdf *.odt *.docx *.txt *.rtf *.epub *.md"),
+            ("PDF files", "*.pdf"),
+            ("ODT files", "*.odt"),
+            ("Word files", "*.docx"),
+            ("Text files", "*.txt"),
+            ("RTF files", "*.rtf"),
+            ("EPUB files", "*.epub"),
+            ("Markdown files", "*.md"),
+            ("All files", "*.*")
+        ]
+        file_paths = filedialog.askopenfilenames(
+            title="Select Files",
+            filetypes=filetypes,
+            initialdir=self.input_folder
+        )
         if not file_paths:
             return
-            
+
         for file_path in file_paths:
             if file_path not in self.pdf_files:
                 self.pdf_files.append(file_path)
                 self.pdf_listbox.insert(tk.END, os.path.basename(file_path))
                 self.print_to_console(f"Added: {os.path.basename(file_path)}", "info")
                 try:
-                    text = self._extract_text_from_pdf(file_path) 
+                    text = self._extract_text_from_file(file_path)
                     words_in_file = self._count_words(text)
                     self.total_word_count += words_in_file
                     self.print_to_console(f"  - Words in '{os.path.basename(file_path)}': {words_in_file}", "info")
-                except Exception:
-                    self.print_to_console(f"Could not count words for {os.path.basename(file_path)}.", "error")
+                except Exception as e:
+                    self.print_to_console(f"Could not count words for {os.path.basename(file_path)}: {e}", "error")
                     self.pdf_files.remove(file_path)
                     self.pdf_listbox.delete(tk.END)
             else:
                 self.print_to_console(f"'{os.path.basename(file_path)}' is already in the list.", "info")
-        
+
         self.update_word_count_display()
         self.save_settings()
         self.on_listbox_select(None)
@@ -1425,16 +1758,36 @@ startxref
             merge_stop_event.set()
             self.print_to_console("Stopping merge process...", "info")
 
-    def _get_output_filepath(self, counter=None, extension=".pdf"):
+    def _get_output_filepath(self, counter=None, extension=None):
         """Generates a unique output filename, with an optional counter for splitting."""
-        base, _ = os.path.splitext(DEFAULT_OUTPUT_FILENAME)
-        
+        # Use custom filename if provided, otherwise use default
+        if self.output_filename_var.get().strip():
+            base_filename = self.output_filename_var.get().strip()
+            # Remove extension if provided
+            base, _ = os.path.splitext(base_filename)
+        else:
+            base, _ = os.path.splitext(DEFAULT_OUTPUT_FILENAME)
+
+        # Determine extension based on output type
+        if extension is None:
+            output_type = self.output_file_type_var.get().lower()
+            extension_map = {
+                'pdf': '.pdf',
+                'odt': '.odt',
+                'docx': '.docx',
+                'txt': '.txt',
+                'rtf': '.rtf',
+                'epub': '.epub',
+                'md': '.md'
+            }
+            extension = extension_map.get(output_type, '.pdf')
+
         # New: Handle numbered files for splitting
         if counter is not None and counter > 1:
             base = f"{base}{counter}"
-            
+
         output_filepath = os.path.join(self.output_folder, f"{base}{extension}")
-        
+
         # Ensure the first file is also unique if it exists
         if counter is None or counter == 1:
             path_template = os.path.join(self.output_folder, base)
@@ -1442,7 +1795,7 @@ startxref
             while os.path.exists(output_filepath):
                 file_counter += 1
                 output_filepath = f"{path_template}{file_counter}{extension}"
-                
+
         return output_filepath
 
     def _scrub_pii_from_doc(self, doc):
@@ -1823,92 +2176,96 @@ startxref
             return None
 
     def _merge_pdfs_threaded(self):
-        """The core PDF processing and merging logic that runs in a thread."""
+        """The core multi-format file processing and merging logic that runs in a thread."""
         global merge_running, merge_paused
-        
-        processed_temp_files = []
+
         try:
-            # --- Stage 1: Pre-process all files (scrub, text-only, etc.) ---
+            # --- Stage 1: Extract text from all files ---
             total_files = len(self.pdf_files)
-            for i, pdf_path in enumerate(self.pdf_files):
+            merged_text = ""
+
+            for i, file_path in enumerate(self.pdf_files):
                 if merge_stop_event.is_set(): break
                 while merge_pause_event.is_set(): time.sleep(0.1)
 
-                self.print_to_console(f"Processing '{os.path.basename(pdf_path)}' ({i+1}/{total_files})...", "progress")
-                
-                doc_to_process = None
+                self.print_to_console(f"Processing '{os.path.basename(file_path)}' ({i+1}/{total_files})...", "progress")
+
                 try:
-                    doc_to_process = fitz.open(pdf_path)
+                    # Extract text from file
+                    text = self._extract_text_from_file(file_path)
 
+                    # Apply text processing options
+                    if self.remove_timestamps_var.get():
+                        timestamp_regex = r'\[(?:(?:\d{2}:)?\d{2}:\d{2}\.\d{3})\s*-->\s*(?:(?:\d{2}:)?\d{2}:\d{2}\.\d{3})\]\s*'
+                        text = re.sub(timestamp_regex, '', text)
+
+                    # Apply PII scrubbing
                     if self.remove_pii_var.get():
-                        doc_to_process = self._scrub_pii_from_doc(doc_to_process)
+                        text = self._scrub_pii_from_text(text)
 
-                    if self.remove_images_var.get():
-                        text_only_doc = fitz.open()
-                        for page in doc_to_process:
-                            page_text = page.get_text("text")
-                            if self.remove_timestamps_var.get():
-                                timestamp_regex = r'\[(?:(?:\d{2}:)?\d{2}:\d{2}\.\d{3})\s*-->\s*(?:(?:\d{2}:)?\d{2}:\d{2}\.\d{3})\]\s*'
-                                page_text = re.sub(timestamp_regex, '', page_text)
-                            
-                            new_page = text_only_doc.new_page(width=page.rect.width, height=page.rect.height)
-                            new_page.insert_text((50, 50), page_text, fontname="helv", fontsize=10)
-                        
-                        doc_to_process.close()
-                        doc_to_process = text_only_doc
-
-                    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                        temp_filename = tmp.name
-                    
-                    doc_to_process.save(temp_filename)
-                    processed_temp_files.append(temp_filename)
+                    # Add to merged text
+                    merged_text += text + "\n\n"
 
                 except Exception as e:
-                    self.print_to_console(f"  Error processing '{os.path.basename(pdf_path)}': {e}. Skipping.", "error")
+                    self.print_to_console(f"  Error processing '{os.path.basename(file_path)}': {e}. Skipping.", "error")
                     continue
-                finally:
-                    if doc_to_process and hasattr(doc_to_process, 'is_closed') and not doc_to_process.is_closed:
-                        doc_to_process.close()
-                
+
                 progress_percent = int(((i + 1) / total_files) * 100)
                 self.print_to_console(f"  Processing progress: {progress_percent}%", "progress")
-            
+
             if merge_stop_event.is_set():
-                self.print_to_console("Process stopped during file pre-processing.", "warning")
+                self.print_to_console("Process stopped during file processing.", "warning")
                 raise SystemExit()
-                
-            # --- Stage 2: Final Merging (with or without splitting) ---
-            if not processed_temp_files:
+
+            if not merged_text.strip():
                 self.print_to_console("No content was successfully processed to merge.", "warning")
                 raise SystemExit()
 
             self.print_to_console("All files processed. Starting final merge...", "progress")
-            
-            # --- Splitting Logic ---
+
+            # --- Stage 2: Generate output file(s) ---
+            saved_files = []
+
             if self.split_by_words_var.get():
-                saved_pdfs = self._merge_with_splitting(processed_temp_files)
-            # --- Standard Merging Logic ---
+                # Split by words
+                try:
+                    words_per_file = int(self.split_word_count_var.get())
+                except ValueError:
+                    words_per_file = 10000
+                    self.print_to_console(f"Invalid word count, using default: {words_per_file}", "warning")
+
+                words = merged_text.split()
+                file_counter = 1
+                while words:
+                    if merge_stop_event.is_set(): break
+
+                    chunk_words = words[:words_per_file]
+                    words = words[words_per_file:]
+                    chunk_text = ' '.join(chunk_words)
+
+                    output_filepath = self._get_output_filepath(counter=file_counter)
+                    self._generate_output_file(chunk_text, output_filepath)
+                    saved_files.append(output_filepath)
+                    self.print_to_console(f"Saved part {file_counter}: {os.path.basename(output_filepath)}", "success")
+                    file_counter += 1
             else:
-                saved_pdfs = self._merge_standard(processed_temp_files)
-            
-            # --- Generate Markdown if requested (convert the final merged PDF(s)) ---
-            if self.generate_markdown_var.get() and saved_pdfs:
-                self.print_to_console("Starting markdown conversion of merged PDF(s)...", "progress")
-                for pdf_path in saved_pdfs:
-                    self._convert_merged_pdf_to_markdown(pdf_path)
+                # Standard merging (single file)
+                output_filepath = self._get_output_filepath()
+                self._generate_output_file(merged_text, output_filepath)
+                saved_files.append(output_filepath)
+                self.print_to_console(f"Merge completed successfully: {os.path.basename(output_filepath)}", "success")
+
+            # --- Generate Markdown if output type is MD and advanced mode selected ---
+            if self.output_file_type_var.get() == "MD" and self.markdown_type_var.get() == "advanced" and saved_files:
+                self.print_to_console("Advanced markdown conversion not yet implemented for multi-format merging.", "warning")
 
         except SystemExit: # Graceful exit on stop
              self.print_to_console("Merge process was stopped by user. No file saved.", "info")
         except Exception as e:
             self.print_to_console(f"An unexpected error occurred during the merge process: {e}", "error")
+            import traceback
+            traceback.print_exc()
         finally:
-            # Clean up temporary files
-            for temp_path in processed_temp_files:
-                try:
-                    os.remove(temp_path)
-                except OSError as e:
-                    self.print_to_console(f"Error removing temporary file {temp_path}: {e}", "error")
-
             merge_running = False
             merge_paused = False
             self.master.after(0, lambda: self.update_ui_for_process(processing=False))
