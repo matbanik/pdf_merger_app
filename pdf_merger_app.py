@@ -1137,9 +1137,34 @@ startxref
         """Counts words in a given text string."""
         return len(re.findall(r'\b\w+\b', text.lower()))
 
+    def _sanitize_text_for_xml(self, text):
+        """Remove control characters and NULL bytes that aren't valid in XML."""
+        import unicodedata
+        # Remove NULL bytes
+        text = text.replace('\x00', '')
+        # Remove other control characters except tab, newline, and carriage return
+        clean_text = []
+        for char in text:
+            # Allow tab (0x09), newline (0x0A), carriage return (0x0D)
+            if char in ('\t', '\n', '\r'):
+                clean_text.append(char)
+            # Remove other control characters (0x00-0x1F except the allowed ones above)
+            elif ord(char) < 0x20:
+                continue
+            # Remove control characters in the range 0x7F-0x9F
+            elif 0x7F <= ord(char) <= 0x9F:
+                continue
+            else:
+                clean_text.append(char)
+        return ''.join(clean_text)
+
     def _generate_output_file(self, text, output_filepath):
         """Generate output file in the selected format."""
         output_type = self.output_file_type_var.get().lower()
+
+        # Sanitize text for XML-based formats (DOCX, ODT, EPUB)
+        if output_type in ['docx', 'odt', 'epub']:
+            text = self._sanitize_text_for_xml(text)
 
         if output_type == 'pdf':
             self._generate_pdf(text, output_filepath)
@@ -1161,9 +1186,56 @@ startxref
     def _generate_pdf(self, text, output_filepath):
         """Generate PDF output from text."""
         doc = fitz.open()
-        page = doc.new_page()
-        text_rect = fitz.Rect(50, 50, page.rect.width - 50, page.rect.height - 50)
-        page.insert_textbox(text_rect, text, fontsize=11, fontname="helv")
+
+        # Page dimensions and margins
+        page_width = 595  # A4 width in points
+        page_height = 842  # A4 height in points
+        margin = 50
+        text_rect = fitz.Rect(margin, margin, page_width - margin, page_height - margin)
+
+        # Split text into paragraphs
+        paragraphs = text.split('\n')
+
+        page = doc.new_page(width=page_width, height=page_height)
+        current_text = []
+
+        for para in paragraphs:
+            # Try adding this paragraph
+            test_text = '\n'.join(current_text + [para])
+            result = page.insert_textbox(
+                text_rect,
+                test_text,
+                fontsize=11,
+                fontname="helv",
+                align=0
+            )
+
+            # If result < 0, text doesn't fit - start a new page
+            if result < 0 and current_text:
+                # Save current page content
+                page.insert_textbox(
+                    text_rect,
+                    '\n'.join(current_text),
+                    fontsize=11,
+                    fontname="helv",
+                    align=0
+                )
+                # Create new page and start with current paragraph
+                page = doc.new_page(width=page_width, height=page_height)
+                current_text = [para]
+            else:
+                current_text.append(para)
+
+        # Add remaining text to last page
+        if current_text:
+            page.insert_textbox(
+                text_rect,
+                '\n'.join(current_text),
+                fontsize=11,
+                fontname="helv",
+                align=0
+            )
+
         doc.save(output_filepath)
         doc.close()
 
@@ -1228,6 +1300,7 @@ startxref
         """Generate EPUB output from text."""
         import ebooklib
         from ebooklib import epub
+        import html
 
         book = epub.EpubBook()
         book.set_identifier('merged_document')
@@ -1236,12 +1309,14 @@ startxref
 
         # Create chapter
         c1 = epub.EpubHtml(title='Chapter 1', file_name='chap_01.xhtml', lang='en')
-        # Convert text to HTML paragraphs
+        # Convert text to HTML paragraphs (escape HTML special characters)
         html_content = '<h1>Merged Document</h1>'
         paragraphs = text.split('\n')
         for para in paragraphs:
             if para.strip():
-                html_content += f'<p>{para}</p>'
+                # Escape HTML special characters
+                escaped_para = html.escape(para)
+                html_content += f'<p>{escaped_para}</p>'
         c1.content = html_content
 
         # Add chapter to book
