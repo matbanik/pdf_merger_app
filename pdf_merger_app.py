@@ -508,40 +508,6 @@ class PDFMergerApp:
         self.split_word_count_label.config(state=state)
         self.split_word_count_entry.config(state=state)
 
-    # New: Method to handle markdown checkbox changes
-    def on_markdown_checkbox_change(self):
-        """Handles changes to the 'Generate Markdown' checkbox state."""
-        self.log_and_save_setting("Generate Markdown", self.generate_markdown_var)
-        self._update_markdown_controls_visibility()
-    
-    # New: Method to handle simple markdown checkbox changes
-    def on_simple_markdown_checkbox_change(self):
-        """Handles changes to the 'Simple Markdown' checkbox state."""
-        self.log_and_save_setting("Simple Markdown", self.simple_markdown_var)
-        self._update_markdown_controls_visibility(log_message=True)
-    
-    def _update_markdown_controls_visibility(self, log_message=False):
-        """Enables/disables GPU and models controls based on simple markdown setting."""
-        if self.generate_markdown_var.get():
-            # Markdown enabled: enable simple markdown checkbox
-            self.simple_markdown_checkbox.config(state=tk.NORMAL)
-            
-            if self.simple_markdown_var.get():
-                # Simple markdown mode: disable GPU and models
-                self.use_gpu_checkbox.config(state=tk.DISABLED)
-                self.preload_models_btn.config(state=tk.DISABLED)
-                if log_message:
-                    self.print_to_console("[INFO] Simple Markdown mode: Using PyMuPDF4LLM (no OCR, GPU not needed)", "info")
-            else:
-                # Advanced markdown mode: enable GPU and models
-                self.use_gpu_checkbox.config(state=tk.NORMAL)
-                self.preload_models_btn.config(state=tk.NORMAL)
-        else:
-            # Markdown disabled: gray out everything
-            self.simple_markdown_checkbox.config(state=tk.DISABLED)
-            self.use_gpu_checkbox.config(state=tk.DISABLED)
-            self.preload_models_btn.config(state=tk.DISABLED)
-
     # New: Method to handle GPU checkbox changes
     def on_gpu_checkbox_change(self):
         """Handles changes to the 'Use GPU' checkbox state."""
@@ -1004,13 +970,13 @@ startxref
             self._update_models_ui_found()
         else:
             self._update_models_ui_not_found()
-        
-        # Update markdown controls visibility based on loaded settings
-        self._update_markdown_controls_visibility()
-        
+
+        # Update markdown controls state based on loaded output type
+        self.on_output_type_change()
+
         # Update qpdf UI status after loading settings
         self._update_qpdf_ui_status()
-        
+
         # Update console visibility and refresh display after loading settings
         self._toggle_console_visibility()
         self._refresh_console_display()
@@ -1692,18 +1658,29 @@ startxref
         self.split_by_words_checkbox.config(state=state)
         self.split_word_count_entry.config(state=state)
         self.split_word_count_label.config(state=state)
-        # New: Disable markdown controls during processing
-        self.generate_markdown_checkbox.config(state=state)
-        self.simple_markdown_checkbox.config(state=state)
-        self.use_gpu_checkbox.config(state=state)
+        # New: Disable output controls during processing
+        self.output_type_dropdown.config(state=state)
+        self.output_filename_entry.config(state=state)
+        # Disable markdown radio buttons if enabled
+        if self.output_file_type_var.get() == "MD":
+            md_state = state
+        else:
+            md_state = tk.DISABLED
+        self.simple_markdown_radio.config(state=md_state)
+        self.advanced_markdown_radio.config(state=md_state)
+        # GPU and models buttons (only if advanced markdown is selected)
+        if self.markdown_type_var.get() == "advanced" and self.output_file_type_var.get() == "MD":
+            adv_md_state = state
+        else:
+            adv_md_state = tk.DISABLED
+        self.use_gpu_checkbox.config(state=adv_md_state)
         # Always allow changing models folder (unless currently downloading)
         if self.preload_models_btn.cget('text') != "Downloading...":
-            self.preload_models_btn.config(state=state)
+            self.preload_models_btn.config(state=adv_md_state if not processing else tk.DISABLED)
 
         if not processing:
             self._update_pii_field_visibility()
             self._update_split_field_visibility()
-            self._update_markdown_controls_visibility()
 
         self.on_listbox_select(None)
 
